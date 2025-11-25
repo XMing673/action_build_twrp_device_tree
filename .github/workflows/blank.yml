@@ -3,45 +3,67 @@ name: Make TWRP Device
 on:
   workflow_dispatch:
     inputs:
-      IMG_URL:    
+      IMG_URL:
         description: 'IMG_URL'
         required: true
         default: ''
 
 jobs:
   build:
+    # 保留你原来的 owner 检查逻辑
     if: github.event.repository.owner.id == github.event.sender.id
-    runs-on: ubuntu-22.04
-    
+    runs-on: ubuntu-24.04
+
     steps:
-    - name: Check Out
-      uses: actions/checkout@main
-      
-    - name: Prepare the environment
-      run: |
-        sudo apt update
-        sudo apt -y install python python3 python3-pip cpio wget
-        pip3 install twrpdtgen
-        mkdir dt
-      
-    - name: Download boot or recovery img
-      run: |
-        aria2c "${{ github.event.inputs.IMG_URL }}"
-        ls
-      
-    - name: Start build
-      run: |
-        python3 -m twrpdtgen -o dt/ *.img
-    - name: ZIP device tree
-      run: |
-        zip -r DeviceTree.zip ./dt
-    - name: Upload to Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: |
-          ./DeviceTree.zip
-        name: TWRP_Device_Tree-${{ github.run_id }}
-        tag_name: ${{ github.run_id }}
-        body: DeviceTree for twrp
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check Out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'   # 可按需改为 3.10 / 3.12
+
+      - name: Prepare the environment
+        run: |
+          sudo apt update
+          # 安装必要工具：python3-pip 通常随 setup-python 可省，但保留以防 runner 没装
+          sudo apt -y install python3-pip cpio zip unzip aria2 wget
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade twrpdtgen
+          mkdir -p dt
+
+      - name: Download boot or recovery img
+        id: download
+        run: |
+          set -e
+          echo "IMG_URL=${{ github.event.inputs.IMG_URL }}"
+          # 使用 wget 下载并存为 input.img（保证文件名一致，方便后续通配）
+          wget -q --show-progress -O input.img "${{ github.event.inputs.IMG_URL }}"
+          # 如果需要用 aria2 并行下载（可选），取消下面注释并调整
+          # aria2c -x 16 -s 16 -o input.img "${{ github.event.inputs.IMG_URL }}"
+          ls -lah
+
+      - name: Start build (generate device tree)
+        run: |
+          # twrpdtgen 支持传入多个 img，使用通配符 *.img
+          # 我们把下载的文件命名为 input.img，仍使用通配以兼容多文件情况
+          python -m twrpdtgen -o dt/ *.img || python -m twrpdtgen -o dt/ input.img
+          # 列出生成结果（便于 CI 日志检查）
+          ls -R dt || true
+
+      - name: ZIP device tree
+        run: |
+          zip -r DeviceTree.zip ./dt
+
+      - name: Create GitHub Release and upload
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            ./DeviceTree.zip
+          name: TWRP_Device_Tree-${{ github.run_id }}
+          tag_name: ${{ github.run_id }}
+          body: DeviceTree for twrp
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
